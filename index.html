@@ -98,6 +98,10 @@
       <div class="settings-content-wrapper">
         <div class="settings-content">
           <div class="setting-group">
+            <label for="circleSpeed">Circle speed:</label>
+            <input type="number" id="circleSpeed" value="8" min="1" max="20" step="0.5" />
+          </div>
+          <div class="setting-group">
             <label for="startBase">Start FPS:</label>
             <input type="number" id="startBase" value="15" min="1" max="240" />
           </div>
@@ -119,7 +123,7 @@
           </div>
           <div class="setting-group">
             <label for="targetReversals">Target reversals:</label>
-            <input type="number" id="targetReversals" value="8" min="4" max="20" />
+            <input type="number" id="targetReversals" value="6" min="4" max="20" />
           </div>
           <div class="setting-group">
             <label for="maxTrials">Max trials:</label>
@@ -135,7 +139,6 @@
         </div>
       </div>
     </div>
-    <span>Try to avoid staring at the circle directly, keep your eyes in the middle.</span>
     <canvas id="canvas" width="800" height="400"></canvas>
     <div id="fpsDisplay"></div>
     <div id="diffWarning" class="diff-warning"></div>
@@ -183,12 +186,12 @@
       uniform float u_time;
       uniform float u_leftFps;
       uniform float u_rightFps;
+      uniform float u_circleSpeed;
 
       #define PI 3.14159
       #define SAMPLES 32
       const float ORBIT_RADIUS  = 0.30;
       const float SPHERE_RADIUS = 0.1;
-      const float ANG_VELOCITY  = 8.0 * PI;
 
       vec3 linearToSRGB(vec3 lin) {
           vec3 lo  = lin * 12.92;
@@ -212,7 +215,7 @@
               float ti = (float(i) + 0.5 + n) / float(SAMPLES);
               float t  = tStart + ti * dt;
 
-              float ang   = ANG_VELOCITY * t;
+              float ang   = u_circleSpeed * PI * t;
               vec2 centre = vec2(cos(ang), sin(ang)) * ORBIT_RADIUS;
 
               sum += cover(p, centre);
@@ -273,6 +276,7 @@
     const uTime = gl.getUniformLocation(program, 'u_time');
     const uLeft = gl.getUniformLocation(program, 'u_leftFps');
     const uRight= gl.getUniformLocation(program, 'u_rightFps');
+    const uCircleSpeed = gl.getUniformLocation(program, 'u_circleSpeed');
 
     let detectedHz = 60;
     let frameCount = 0; let lastTime = performance.now();
@@ -536,6 +540,8 @@
     let currentLeftFps = 30; let currentRightFps = 60;
     function renderLoop(){
       const t = (performance.now()-startTime)/1000;
+      const circleSpeed = parseFloat(document.getElementById('circleSpeed').value);
+      
       gl.viewport(0,0,canvas.width, canvas.height);
       gl.clear(gl.COLOR_BUFFER_BIT);
       gl.useProgram(program);
@@ -543,6 +549,7 @@
       gl.uniform1f(uTime, t);
       gl.uniform1f(uLeft, currentLeftFps);
       gl.uniform1f(uRight,currentRightFps);
+      gl.uniform1f(uCircleSpeed, circleSpeed);
       gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
       gl.enableVertexAttribArray(aPos);
       gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0,0);
