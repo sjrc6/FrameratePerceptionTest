@@ -17,7 +17,8 @@ body {
 }
 .main { width: 100%; max-width: 900px; display: flex; flex-direction: column; align-items: center; }
 h1, h2, h3 { margin: 0.3em 0; }
-#canvas { border: 2px solid var(--border); margin: 16px 0; }
+.canvas-row { display:flex; gap:16px; margin:16px 0; flex-wrap: nowrap; overflow-x: auto; justify-content:flex-start; }
+#canvasLeft, #canvasRight { border: 2px solid var(--border); flex: 0 0 auto; }
 .controls { display: flex; gap: 16px; margin: 16px 0; flex-wrap: wrap; justify-content:center; }
 button {
   padding: 14px 26px; font-size: 18px; background: #333; color: var(--fg);

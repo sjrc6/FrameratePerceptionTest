@@ -1,23 +1,23 @@
-const canvas = document.getElementById('canvas');
-const gl = canvas.getContext('webgl');
-if (!gl) alert('WebGL not supported');
+const canvasLeft = document.getElementById('canvasLeft');
+const canvasRight = document.getElementById('canvasRight');
 
 const vertexShaderSource = `
   attribute vec2 a_position;
   void main(){ gl_Position = vec4(a_position, 0.0, 1.0); }
 `;
 
+// Single-canvas shader: samples adapt to a uniform u_samples
 const fragmentShaderSource = `
   precision highp float;
 
   uniform vec2  u_resolution;
   uniform float u_time;
-  uniform float u_leftFps;
-  uniform float u_rightFps;
+  uniform float u_fps;
   uniform float u_circleSpeed;
+  uniform float u_samples; // number of motion blur samples to accumulate
 
   #define PI 3.14159
-  #define SAMPLES 32
+  #define MAX_SAMPLES 64.0
   const float ORBIT_RADIUS  = 0.30;
   const float SPHERE_RADIUS = 0.1;
 
@@ -33,78 +33,120 @@ const fragmentShaderSource = `
       return 1.0 - smoothstep(SPHERE_RADIUS, SPHERE_RADIUS * 1.05, d);
   }
 
-  float shutterBlur(vec2 p, float fps, float tStart){
+  float shutterBlur(vec2 p, float fps, float tStart, float sampleCount){
       float dt  = 1.0 / fps;
       float sum = 0.0;
-
       float n = fract(sin(dot(p.xy * 0.37, vec2(12.9898, 78.233))) * 43758.5453);
-
-      for (int i = 0; i < SAMPLES; i++) {
-          float ti = (float(i) + 0.5 + n) / float(SAMPLES);
-          float t  = tStart + ti * dt;
-
-          float ang   = u_circleSpeed * PI * t;
-          vec2 centre = vec2(cos(ang), sin(ang)) * ORBIT_RADIUS;
-
-          sum += cover(p, centre);
+      float maxSamples = MAX_SAMPLES;
+      // Loop up to MAX_SAMPLES and conditionally accumulate first sampleCount
+      for (int i = 0; i < 64; i++) {
+          float fi = float(i);
+          if (fi >= maxSamples) break; // guard for some drivers
+          if (fi < sampleCount) {
+              float ti = (fi + 0.5 + n) / sampleCount;
+              float t  = tStart + ti * dt;
+              float ang   = u_circleSpeed * PI * t;
+              vec2 centre = vec2(cos(ang), sin(ang)) * ORBIT_RADIUS;
+              sum += cover(p, centre);
+          }
       }
-      return sum / float(SAMPLES);
+      return sum / max(sampleCount, 1.0);
   }
-
 
   void main(){
       vec2 frag = gl_FragCoord.xy;
       vec2 p = (2.0 * frag - u_resolution) / u_resolution.y;
-
-      float aspectHalf = u_resolution.x / u_resolution.y * 0.5;
-      vec3  colLinear  = vec3(0.0);
-
-      if (p.x < 0.0) {
-          vec2 lp   = p - vec2(-aspectHalf, 0.0);
-          float ft  = 1.0 / u_leftFps;
-          float tS  = floor(u_time / ft) * ft;
-          float op  = shutterBlur(lp, u_leftFps, tS);
-          colLinear = vec3(op);
-      } else {
-          vec2 rp   = p - vec2( aspectHalf, 0.0);
-          float ft  = 1.0 / u_rightFps;
-          float tS  = floor(u_time / ft) * ft;
-          float op  = shutterBlur(rp, u_rightFps, tS);
-          colLinear = vec3(op);
-      }
-
-      if (abs(p.x) < 0.006) colLinear = vec3(1.0);
-
-      vec3 colSRGB = linearToSRGB(clamp(colLinear, 0.0, 1.0));
+      float ft  = 1.0 / u_fps;
+      float tS  = u_time;
+      float op  = shutterBlur(p, u_fps, tS, clamp(u_samples, 1.0, MAX_SAMPLES));
+      vec3 colSRGB = linearToSRGB(vec3(clamp(op, 0.0, 1.0)));
       gl_FragColor = vec4(colSRGB, 1.0);
   }
-
 `;
 
-function compileShader(src, type){
-  const sh = gl.createShader(type);
-  gl.shaderSource(sh, src); gl.compileShader(sh);
-  if(!gl.getShaderParameter(sh, gl.COMPILE_STATUS)){
-    console.error('Shader error:', gl.getShaderInfoLog(sh));
-    gl.deleteShader(sh); return null;
-  }
-  return sh;
-}
-const vsh = compileShader(vertexShaderSource, gl.VERTEX_SHADER);
-const fsh = compileShader(fragmentShaderSource, gl.FRAGMENT_SHADER);
-const program = gl.createProgram();
-gl.attachShader(program, vsh); gl.attachShader(program, fsh); gl.linkProgram(program);
-if(!gl.getProgramParameter(program, gl.LINK_STATUS)) console.error('Link error:', gl.getProgramInfoLog(program));
+function createRenderer(canvas){
+  const gl = canvas.getContext('webgl');
+  if(!gl){ alert('WebGL not supported'); return null; }
 
-const posBuf = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
-gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
-const aPos = gl.getAttribLocation(program, 'a_position');
-const uRes = gl.getUniformLocation(program, 'u_resolution');
-const uTime = gl.getUniformLocation(program, 'u_time');
-const uLeft = gl.getUniformLocation(program, 'u_leftFps');
-const uRight= gl.getUniformLocation(program, 'u_rightFps');
-const uCircleSpeed = gl.getUniformLocation(program, 'u_circleSpeed');
+  function compileShader(src, type){
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, src); gl.compileShader(sh);
+    if(!gl.getShaderParameter(sh, gl.COMPILE_STATUS)){
+      console.error('Shader error:', gl.getShaderInfoLog(sh));
+      gl.deleteShader(sh); return null;
+    }
+    return sh;
+  }
+
+  const vsh = compileShader(vertexShaderSource, gl.VERTEX_SHADER);
+  const fsh = compileShader(fragmentShaderSource, gl.FRAGMENT_SHADER);
+  const program = gl.createProgram();
+  gl.attachShader(program, vsh); gl.attachShader(program, fsh); gl.linkProgram(program);
+  if(!gl.getProgramParameter(program, gl.LINK_STATUS)) console.error('Link error:', gl.getProgramInfoLog(program));
+
+  const posBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+
+  const aPos = gl.getAttribLocation(program, 'a_position');
+  const uRes = gl.getUniformLocation(program, 'u_resolution');
+  const uTime = gl.getUniformLocation(program, 'u_time');
+  const uFps = gl.getUniformLocation(program, 'u_fps');
+  const uCircleSpeed = gl.getUniformLocation(program, 'u_circleSpeed');
+  const uSamples = gl.getUniformLocation(program, 'u_samples');
+
+  let targetFps = 60;
+  let measuredFps = 60;
+  let frames = 0;
+  let fpsWindowStart = performance.now();
+  const targetSampleRate = 2000; // fps-equivalent sampling target
+
+  function setTargetFps(fps){ targetFps = Math.max(1, fps); }
+
+  function draw(now, globalStart){
+    const t = (now - globalStart)/1000;
+    const circleSpeed = parseFloat(document.getElementById('circleSpeed').value);
+    const ratio = window.devicePixelRatio || 1;
+    // keep canvas backing store crisp
+    const w = canvas.width, h = canvas.height;
+    gl.viewport(0,0,w,h);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(program);
+    gl.uniform2f(uRes, w, h);
+    gl.uniform1f(uTime, t);
+    gl.uniform1f(uFps, targetFps);
+    gl.uniform1f(uCircleSpeed, circleSpeed);
+    const samples = Math.max(1, Math.min(64, Math.round(targetSampleRate / targetFps)));
+    gl.uniform1f(uSamples, samples);
+    gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0,0);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    frames++;
+    if(now - fpsWindowStart >= 1000){
+      measuredFps = frames / ((now - fpsWindowStart)/1000);
+      fpsWindowStart = now; frames = 0;
+    }
+  }
+
+  // schedule per-canvas updates using rAF gating
+  let nextDue = performance.now();
+  function tick(globalStart){
+    const now = performance.now();
+    if(now >= nextDue){
+      draw(now, globalStart);
+      const interval = 1000/targetFps;
+      nextDue += interval;
+      if(now - nextDue > interval){ // catch-up if tab was inactive
+        nextDue = now + interval;
+      }
+    }
+    requestAnimationFrame(()=>tick(globalStart));
+  }
+
+  return { setTargetFps, start:(globalStart)=>{ nextDue = performance.now(); tick(globalStart); } };
+}
 
 let detectedHz = 60;
 let frameCount = 0; let lastTime = performance.now();
@@ -219,6 +261,10 @@ function generateTrial(){
     currentLeftFps = compFps;
     currentRightFps = baseFps;
     higherSide = 'left';
+  }
+  if (leftRenderer && rightRenderer){
+    leftRenderer.setTargetFps(currentLeftFps);
+    rightRenderer.setTargetFps(currentRightFps);
   }
   awaitingChoice = true;
   updateFpsDisplay();
@@ -366,25 +412,14 @@ function clearChart(){
 }
 let startTime = performance.now();
 let currentLeftFps = 30; let currentRightFps = 60;
-function renderLoop(){
-  const t = (performance.now()-startTime)/1000;
-  const circleSpeed = parseFloat(document.getElementById('circleSpeed').value);
-  
-  gl.viewport(0,0,canvas.width, canvas.height);
-  gl.clear(gl.COLOR_BUFFER_BIT);
-  gl.useProgram(program);
-  gl.uniform2f(uRes, canvas.width, canvas.height);
-  gl.uniform1f(uTime, t);
-  gl.uniform1f(uLeft, currentLeftFps);
-  gl.uniform1f(uRight,currentRightFps);
-  gl.uniform1f(uCircleSpeed, circleSpeed);
-  gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
-  gl.enableVertexAttribArray(aPos);
-  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0,0);
-  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-  requestAnimationFrame(renderLoop);
+const leftRenderer = createRenderer(canvasLeft);
+const rightRenderer = createRenderer(canvasRight);
+if(leftRenderer && rightRenderer){
+  leftRenderer.setTargetFps(currentLeftFps);
+  rightRenderer.setTargetFps(currentRightFps);
+  leftRenderer.start(startTime);
+  rightRenderer.start(startTime);
 }
-renderLoop();
 
 leftBtn.addEventListener('click', ()=>handleChoice('left'));
 rightBtn.addEventListener('click', ()=>handleChoice('right'));
