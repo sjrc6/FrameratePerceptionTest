@@ -11,10 +11,10 @@ const fragmentShaderSource = `
   precision highp float;
 
   uniform vec2  u_resolution;
-  uniform float u_time;
-  uniform float u_fps;
+  uniform float u_tStart;     // measured start time (seconds)
+  uniform float u_tEnd;       // measured end time (seconds)
   uniform float u_circleSpeed;
-  uniform float u_samples; // number of motion blur samples to accumulate
+  uniform float u_samples;    // number of motion blur samples to accumulate
 
   #define PI 3.14159
   #define MAX_SAMPLES 64.0
@@ -33,8 +33,7 @@ const fragmentShaderSource = `
       return 1.0 - smoothstep(SPHERE_RADIUS, SPHERE_RADIUS * 1.05, d);
   }
 
-  float shutterBlur(vec2 p, float fps, float tStart, float sampleCount){
-      float dt  = 1.0 / fps;
+  float shutterBlur(vec2 p, float tStart, float tEnd, float sampleCount){
       float sum = 0.0;
       float n = fract(sin(dot(p.xy * 0.37, vec2(12.9898, 78.233))) * 43758.5453);
       float maxSamples = MAX_SAMPLES;
@@ -43,8 +42,8 @@ const fragmentShaderSource = `
           float fi = float(i);
           if (fi >= maxSamples) break; // guard for some drivers
           if (fi < sampleCount) {
-              float ti = (fi + 0.5 + n) / sampleCount;
-              float t  = tStart + ti * dt;
+              float ti = (fi + 0.5 + n) / sampleCount; // 0..1 jittered
+              float t  = mix(tStart, tEnd, ti);
               float ang   = u_circleSpeed * PI * t;
               vec2 centre = vec2(cos(ang), sin(ang)) * ORBIT_RADIUS;
               sum += cover(p, centre);
@@ -56,9 +55,7 @@ const fragmentShaderSource = `
   void main(){
       vec2 frag = gl_FragCoord.xy;
       vec2 p = (2.0 * frag - u_resolution) / u_resolution.y;
-      float ft  = 1.0 / u_fps;
-      float tS  = u_time;
-      float op  = shutterBlur(p, u_fps, tS, clamp(u_samples, 1.0, MAX_SAMPLES));
+      float op  = shutterBlur(p, u_tStart, u_tEnd, clamp(u_samples, 1.0, MAX_SAMPLES));
       vec3 colSRGB = linearToSRGB(vec3(clamp(op, 0.0, 1.0)));
       gl_FragColor = vec4(colSRGB, 1.0);
   }
@@ -90,8 +87,8 @@ function createRenderer(canvas){
 
   const aPos = gl.getAttribLocation(program, 'a_position');
   const uRes = gl.getUniformLocation(program, 'u_resolution');
-  const uTime = gl.getUniformLocation(program, 'u_time');
-  const uFps = gl.getUniformLocation(program, 'u_fps');
+  const uTStart = gl.getUniformLocation(program, 'u_tStart');
+  const uTEnd = gl.getUniformLocation(program, 'u_tEnd');
   const uCircleSpeed = gl.getUniformLocation(program, 'u_circleSpeed');
   const uSamples = gl.getUniformLocation(program, 'u_samples');
 
@@ -103,8 +100,10 @@ function createRenderer(canvas){
 
   function setTargetFps(fps){ targetFps = Math.max(1, fps); }
 
+  let lastEndSec = null; // end time of previous frame for contiguous shutter intervals
+
   function draw(now, globalStart){
-    const t = (now - globalStart)/1000;
+    const nowSec = (now - globalStart)/1000;
     const circleSpeed = parseFloat(document.getElementById('circleSpeed').value);
     const ratio = window.devicePixelRatio || 1;
     // keep canvas backing store crisp
@@ -113,15 +112,24 @@ function createRenderer(canvas){
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.useProgram(program);
     gl.uniform2f(uRes, w, h);
-    gl.uniform1f(uTime, t);
-    gl.uniform1f(uFps, targetFps);
+    // Compute contiguous shutter interval [tStartSec, tEndSec]
+    const defaultDt = 1.0 / Math.max(1, targetFps);
+    const tStartSec = (lastEndSec != null) ? lastEndSec : (nowSec - defaultDt);
+    const tEndSec   = nowSec;
+    gl.uniform1f(uTStart, tStartSec);
+    gl.uniform1f(uTEnd,   tEndSec);
     gl.uniform1f(uCircleSpeed, circleSpeed);
-    const samples = Math.max(1, Math.min(64, Math.round(targetSampleRate / targetFps)));
+    // Choose samples proportional to measured duration to maintain a roughly constant samples-per-second
+    const dtSec = Math.max(0.000001, tEndSec - tStartSec);
+    const samples = Math.max(1, Math.min(64, Math.round(targetSampleRate * dtSec)));
     gl.uniform1f(uSamples, samples);
     gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
     gl.enableVertexAttribArray(aPos);
     gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0,0);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    // Update last end time for continuity into the next frame
+    lastEndSec = tEndSec;
 
     frames++;
     if(now - fpsWindowStart >= 1000){
@@ -145,7 +153,7 @@ function createRenderer(canvas){
     requestAnimationFrame(()=>tick(globalStart));
   }
 
-  return { setTargetFps, start:(globalStart)=>{ nextDue = performance.now(); tick(globalStart); } };
+  return { setTargetFps, start:(globalStart)=>{ lastEndSec = (performance.now() - globalStart)/1000; nextDue = performance.now(); tick(globalStart); } };
 }
 
 let detectedHz = 60;
